@@ -6,8 +6,8 @@ services:
     ports:
       - "8000:8000"
     volumes:
-      - .:/app:ro
-      - data:/app/data
+      - .:/app:ro  # Read-only mount of application code
+      - data:/app/data:rw  # Writable mount for database
     env_file:
       - .env
     environment:

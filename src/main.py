@@ -1,8 +1,11 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from .database import engine, Base
+from .database import engine, Base, init_db
 from .routers import auth
 from .config import get_settings
+
+# Initialize database tables
+init_db()
 
 app = FastAPI(
     title="TeamVault",
