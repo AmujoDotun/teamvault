@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Authentication</title>
+    <!-- <script>
+        // Immediately redirect to frontend after storing tokens
+        window.onload = function() {
+            try {
+                const authData = {{ auth_data|tojson|safe }}; 
+                console.log('Auth data received:', authData);
+                
+                if (authData && authData.access_token) {
+                    localStorage.setItem('jwt_token', authData.access_token);
+                    localStorage.setItem('github_token', authData.github_token);
+                    localStorage.setItem('user_data', JSON.stringify(authData.user));
+                    console.log('Tokens stored, redirecting to frontend...');
+                    window.location.replace('http://localhost:3000/');
+                } else {
+                    throw new Error('Invalid auth data received');
+                }
+            } catch (error) {
+                console.error('Auth error:', error);
+                document.getElementById('message').textContent = 'Authentication failed: ' + error.message;
+            }
+        };
+    </script> -->
+</head>
+<body>
+    <div id="message">Authenticating...</div>
+</body>
+</html>

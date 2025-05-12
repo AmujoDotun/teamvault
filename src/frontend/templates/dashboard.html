@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>{{ title }}</title>
+    <link rel="stylesheet" href="{{ url_for('static', path='css/style.css') }}">
+</head>
+<body>
+    <nav>
+        <h1>GitHub Organization Manager</h1>
+        <div id="org-selector">Loading organizations...</div>
+    </nav>
+    
+    <main>
+        <section id="overview">
+            <h2>Organization Overview</h2>
+            <div class="stats">
+                <div class="stat-card" id="members-count">Loading members...</div>
+                <div class="stat-card" id="teams-count">Loading teams...</div>
+                <div class="stat-card" id="repos-count">Loading repos...</div>
+            </div>
+        </section>
+    </main>
+    
+    <script>
+    </script>
+    <script src="{{ url_for('static', path='js/app.js') }}"></script>
+</body>
+</html>

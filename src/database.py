@@ -1,26 +1,19 @@
+import os
 from sqlalchemy import create_engine
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
-import os
-from .config import get_settings
 
-settings = get_settings()
-
-# Ensure data directory exists
-data_dir = "/app/data"
+# Change data directory to user's home directory
+data_dir = os.path.expanduser('~/github-user-management-data')
 os.makedirs(data_dir, exist_ok=True)
 
-# Update database URL to use data directory
-SQLALCHEMY_DATABASE_URL = "sqlite:////app/data/teamvault.db"
+# Database URL
+DATABASE_URL = f"sqlite:///{os.path.join(data_dir, 'app.db')}"
 
-engine = create_engine(
-    SQLALCHEMY_DATABASE_URL, connect_args={"check_same_thread": False}
-)
+engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-
 Base = declarative_base()
 
-# Create all tables
 def init_db():
     Base.metadata.create_all(bind=engine)
 

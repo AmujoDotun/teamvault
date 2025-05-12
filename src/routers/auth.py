@@ -7,7 +7,18 @@ from ..config import get_settings
 from ..models.user import User
 from ..utils.auth import create_access_token, get_current_user
 from ..database import SessionLocal
+import json
+from fastapi import APIRouter, Request, Depends
+from fastapi.responses import RedirectResponse
+import httpx
+import logging
+import os
+from ..config import get_settings
+from ..models.user import User
+from ..utils.auth import create_access_token, get_current_user
+from ..database import SessionLocal
 from datetime import timedelta
+from jose import jwt
 
 # Configure logging
 logging.basicConfig(level=logging.DEBUG)
@@ -36,94 +47,161 @@ async def login():
     )
     return RedirectResponse(url=github_auth_url)
 
+# # Add to imports
+# from fastapi.middleware.cors import CORSMiddleware
+
+
+
+# Update callback function
 @router.get("/auth/callback")
 async def callback(request: Request, code: str | None = None):
-    """Step 2: Handle GitHub OAuth Callback
-    Exchanges authorization code for access token and creates user session"""
     if not code:
         raise HTTPException(status_code=400, detail="No code provided")
 
-    # Step 2a: Exchange authorization code for access token
-    token_url = "https://github.com/login/oauth/access_token"
-    async with httpx.AsyncClient() as client:
-        response = await client.post(
-            token_url,
-            data={
-                "client_id": settings.github_client_id,
-                "client_secret": settings.github_client_secret,
-                "code": code
-            },
-            headers={"Accept": "application/json"}
-        )
-        
-        token_data = response.json()
-        access_token = token_data.get("access_token")
-        
-        if not access_token:
-            raise HTTPException(status_code=400, detail="Failed to get access token")
+    try:
+        # Exchange code for token
+        token_url = "https://github.com/login/oauth/access_token"
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                token_url,
+                data={
+                    "client_id": settings.github_client_id,
+                    "client_secret": settings.github_client_secret,
+                    "code": code
+                },
+                headers={"Accept": "application/json"}
+            )
+            
+            token_data = response.json()
+            access_token = token_data.get("access_token")
+            
+            if not access_token:
+                raise HTTPException(status_code=400, detail="Failed to get access token")
 
-        # Step 2b: Fetch user information from GitHub API
-        user_response = await client.get(
+            # Fetch user data
+            user_response = await client.get(
+                "https://api.github.com/user",
+                headers={
+                    "Authorization": f"Bearer {access_token}",
+                    "Accept": "application/json"
+                }
+            )
+            user_data = user_response.json()
+
+            # Get user's email
+            email_response = await client.get(
+                "https://api.github.com/user/emails",
+                headers={
+                    "Authorization": f"Bearer {access_token}",
+                    "Accept": "application/json"
+                }
+            )
+            emails = email_response.json()
+            primary_email = next((email["email"] for email in emails if email["primary"]), None)
+
+            # Database operations
+            db = SessionLocal()
+            try:
+                user = db.query(User).filter(User.github_id == str(user_data["id"])).first()
+                if not user:
+                    user = User(
+                        github_id=str(user_data["id"]),
+                        username=user_data["login"],
+                        email=primary_email,
+                        access_token=access_token
+                    )
+                    db.add(user)
+                else:
+                    user.access_token = access_token
+                    user.email = primary_email
+                db.commit()
+                db.refresh(user)
+
+                # Create JWT token
+                jwt_token = create_access_token(
+                    data={"sub": user.username},
+                    expires_delta=timedelta(days=1)
+                )
+
+                # Prepare response data
+                response_data = {
+                    "access_token": jwt_token,
+                    "token_type": "bearer",
+                    "github_token": user.access_token,
+                    "user": {
+                        "username": user.username,
+                        "email": user.email
+                    }
+                }
+
+                # Return redirect response
+                frontend_url = "http://localhost:3000"
+                return RedirectResponse(
+                    url=f"{frontend_url}?auth_data={json.dumps(response_data)}",
+                    status_code=302
+                )
+            finally:
+                db.close()
+    except Exception as e:
+        logger.error(f"Error in callback: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/auth/debug/token")
+async def debug_token(current_user: User = Depends(get_current_user)):
+    async with httpx.AsyncClient() as client:
+        response = await client.get(
             "https://api.github.com/user",
             headers={
-                "Authorization": f"Bearer {access_token}",
-                "Accept": "application/json"
+                "Authorization": f"token {current_user.access_token}",
+                "Accept": "application/vnd.github.v3+json"
             }
         )
-        user_data = user_response.json()
-
-        # Get user's email from GitHub API
-        email_response = await client.get(
-            "https://api.github.com/user/emails",
+        
+        scopes_response = await client.get(
+            "https://api.github.com/user/orgs",
             headers={
-                "Authorization": f"Bearer {access_token}",
-                "Accept": "application/json"
+                "Authorization": f"token {current_user.access_token}",
+                "Accept": "application/vnd.github.v3+json"
             }
         )
-        emails = email_response.json()
-        primary_email = next((email["email"] for email in emails if email["primary"]), None)
+        
+        return {
+            "status": response.status_code,
+            "scopes": response.headers.get("X-OAuth-Scopes"),
+            "user_data": response.json(),
+            "orgs_status": scopes_response.status_code,
+            "orgs_response": scopes_response.json() if scopes_response.status_code == 200 else None
+        }
 
-        # Create or update user in database
-        db = SessionLocal()
-        try:
-            user = db.query(User).filter(User.github_id == str(user_data["id"])).first()
-            if not user:
-                user = User(
-                    github_id=str(user_data["id"]),
-                    username=user_data["login"],
-                    email=primary_email,  # Use primary email
-                    access_token=access_token
-                )
-                db.add(user)
-            else:
-                user.access_token = access_token
-                user.email = primary_email  # Update email if changed
-            db.commit()
-            db.refresh(user)
+@router.get("/auth/verify")
+async def verify_auth(request: Request):
+    """Verify if the user is authenticated by checking the access token"""
+    try:
+        # Check if the user is authenticated
+       
+       token = request.cookies.get("jwt_token")
 
-            # Step 2d: Create JWT session token for our application
-            access_token = create_access_token(
-                data={"sub": user.username},
-                expires_delta=timedelta(days=1)
-            )
+       if not token:
+            raise HTTPException(status_code=401, detail="Not authenticated")
 
-            return {
-                "access_token": access_token,
-                "token_type": "bearer",
-                "user": {
-                    "username": user.username,
-                    "email": user.email
-                }
+       current_user = await get_current_user(token)
+      
+       print(f"Current user:", {"current_user": current_user.username})
+       
+       if not current_user:
+            raise HTTPException(status_code=401, detail="Not authenticated")
+        
+       # If authenticated, return user data
+       return JSONResponse(status_code=200, content={
+            "message": "User is authenticated",
+            "user": {
+                "id": current_user.id,
+                "username": current_user.username,
+                "email": current_user.email,
+                "access_token": current_user.access_token
             }
-        finally:
-            db.close()
-
-@router.get("/auth/me")
-async def read_users_me(current_user: User = Depends(get_current_user)):
-    """Protected endpoint: Returns authenticated user's information
-    Uses JWT token for authentication"""
-    return {
-        "username": current_user.username,
-        "email": current_user.email,
-        "github_id": current_user.github_id
-    }
+        })
+    except Exception as e:
+        logger.error(f"Error in verify_auth: {e}")
+        print(f"Error in verify_auth: {e}")
+        raise HTTPException(status_code=500, detail=str(e))

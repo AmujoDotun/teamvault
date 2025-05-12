@@ -1,8 +1,9 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from .database import engine, Base, init_db
-from .routers import auth
-from .config import get_settings
+# Change from relative to absolute imports
+from src.database import engine, Base, init_db
+from src.routers import auth, org
+from src.config import get_settings
 
 # Initialize database tables
 init_db()
@@ -15,7 +16,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["http://localhost:3000"],  # Specify frontend URL
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -23,6 +24,7 @@ app.add_middleware(
 
 # Include the auth router
 app.include_router(auth.router)
+app.include_router(org.router, prefix="/api/v1")
 
 @app.get("/")
 async def root():
