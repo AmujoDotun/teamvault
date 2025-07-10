@@ -4,35 +4,29 @@ import httpx
 import logging
 import os
 from ..config import get_settings
-from ..models.user import User
+from ..models.user import User, UserRead # UserRead is here
 from ..utils.auth import create_access_token, get_current_user
-from ..database import SessionLocal
+from ..database import SessionLocal, get_db # Add get_db
+from sqlalchemy.orm import Session # Add Session
 import json
-from fastapi import APIRouter, Request, Depends
-from fastapi.responses import RedirectResponse
-import httpx
-import logging
-import os
-from ..config import get_settings
-from ..models.user import User
-from ..utils.auth import create_access_token, get_current_user
-from ..database import SessionLocal
-from datetime import timedelta
-from jose import jwt
+from datetime import timedelta # Keep timedelta
+from jose import jwt # Keep jose jwt
+# Removed duplicated imports below
 
 # Configure logging
-logging.basicConfig(level=logging.DEBUG)
+# logging.basicConfig(level=logging.DEBUG) # This will be handled by main app or uvicorn
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-# Initialize settings and environment variables for GitHub OAuth
+# Initialize settings for GitHub OAuth
 settings = get_settings()
-client_id = os.environ.get('GITHUB_CLIENT_ID', 'not_set')
-logger.debug(f"Direct env GITHUB_CLIENT_ID: {client_id}")
-logger.debug(f"Settings GITHUB_CLIENT_ID: {settings.github_client_id}")
+# Removed direct os.environ.get for GITHUB_CLIENT_ID and related logging,
+# as settings.github_client_id is the consolidated way to access it.
+logger.debug(f"Settings GITHUB_CLIENT_ID loaded: {bool(settings.github_client_id)}")
 
-@router.get("/auth/login", name="auth_login")
+
+@router.get("/login", name="auth_login")  # Path changed from /auth/login
 async def login():
     """Step 1: Initiate GitHub OAuth Flow
     Redirects user to GitHub's authorization page"""
@@ -47,14 +41,9 @@ async def login():
     )
     return RedirectResponse(url=github_auth_url)
 
-# # Add to imports
-# from fastapi.middleware.cors import CORSMiddleware
-
-
-
 # Update callback function
-@router.get("/auth/callback")
-async def callback(request: Request, code: str | None = None):
+@router.get("/callback")  # Path changed from /auth/callback
+async def callback(request: Request, code: str | None = None, db: Session = Depends(get_db)): # Added db dependency
     if not code:
         raise HTTPException(status_code=400, detail="No code provided")
 
@@ -99,54 +88,65 @@ async def callback(request: Request, code: str | None = None):
             emails = email_response.json()
             primary_email = next((email["email"] for email in emails if email["primary"]), None)
 
-            # Database operations
-            db = SessionLocal()
-            try:
-                user = db.query(User).filter(User.github_id == str(user_data["id"])).first()
-                if not user:
-                    user = User(
-                        github_id=str(user_data["id"]),
-                        username=user_data["login"],
-                        email=primary_email,
-                        access_token=access_token
-                    )
-                    db.add(user)
-                else:
-                    user.access_token = access_token
-                    user.email = primary_email
-                db.commit()
-                db.refresh(user)
-
-                # Create JWT token
-                jwt_token = create_access_token(
-                    data={"sub": user.username},
-                    expires_delta=timedelta(days=1)
+            # Database operations using injected db session
+            user = db.query(User).filter(User.github_id == str(user_data["id"])).first()
+            if not user:
+                user = User(
+                    github_id=str(user_data["id"]),
+                    username=user_data["login"],
+                    email=primary_email,
+                    access_token=access_token
                 )
+                db.add(user)
+            else:
+                user.access_token = access_token
+                user.email = primary_email
+            db.commit()
+            db.refresh(user)
 
-                # Prepare response data
-                response_data = {
-                    "access_token": jwt_token,
-                    "token_type": "bearer",
-                    "github_token": user.access_token,
-                    "user": {
-                        "username": user.username,
-                        "email": user.email
-                    }
-                }
+            # Create JWT token for our session
+            app_jwt_token = create_access_token(
+                data={"sub": user.username, "github_id": user.github_id}, # Include github_id or other stable user id
+                expires_delta=timedelta(days=1)
+            )
 
-                # Return redirect response
-                frontend_url = "http://localhost:3000"
-                return RedirectResponse(
-                    url=f"{frontend_url}?auth_data={json.dumps(response_data)}",
-                    status_code=302
-                )
-            finally:
-                db.close()
+            frontend_url = "http://localhost:3000/"
+            redirect_response = RedirectResponse(url=frontend_url, status_code=302)
+
+            # Set JWT token for app session
+            redirect_response.set_cookie(
+                key="jwt_token",
+                value=app_jwt_token,
+                httponly=True,
+                max_age=86400,  # 24 hours
+                secure=False, # Set to True in production if using HTTPS
+                samesite="lax",
+                path="/"
+            )
+            # Also store the GitHub access token if frontend needs to make direct GitHub API calls (consider security implications)
+            # For now, let's assume the backend proxies all GitHub requests or the frontend doesn't need it directly.
+            # If it is needed, ensure it's handled securely.
+            # For this iteration, we will also set the github_token as a cookie.
+            redirect_response.set_cookie(
+                key="github_token",
+                value=user.access_token, # This is the GitHub OAuth token
+                httponly=True,
+                max_age=86400, # 24 hours
+                secure=False, # Set to True in production
+                samesite="lax",
+                path="/"
+            )
+            return redirect_response
+            # No db.close() needed here, Depends(get_db) handles it.
     except Exception as e:
         logger.error(f"Error in callback: {e}")
+        # It's good practice to rollback in case of error during db operations,
+        # though Depends(get_db) doesn't do this automatically.
+        # For now, simple error raising. Consider adding rollback if complex transactions.
+        db.rollback() # Add rollback on exception
         raise HTTPException(status_code=500, detail=str(e))
 
-@router.get("/auth/debug/token")
+@router.get("/debug/token")  # Path changed from /auth/debug/token
 async def debug_token(current_user: User = Depends(get_current_user)):
     async with httpx.AsyncClient() as client:
         response = await client.get(
@@ -173,35 +173,19 @@ async def debug_token(current_user: User = Depends(get_current_user)):
             "orgs_response": scopes_response.json() if scopes_response.status_code == 200 else None
         }
 
-@router.get("/auth/verify")
-async def verify_auth(request: Request):
-    """Verify if the user is authenticated by checking the access token"""
-    try:
-        # Check if the user is authenticated
-       
-       token = request.cookies.get("jwt_token")
+@router.get("/verify", response_model=UserRead) # Use UserRead as response_model
+async def verify_auth(current_user: User = Depends(get_current_user)):
+    """
+    Verify if the user is authenticated based on the jwt_token cookie.
+    Returns basic user information if authenticated.
+    """
+    # current_user is an SQLAlchemy User model instance.
+    # FastAPI will automatically convert it to UserRead schema due to response_model.
+    # However, the frontend expects a dict: {"message": "...", "user": UserRead_dict}
+    # So, we'll construct this dictionary. UserRead.from_orm(current_user) can be used.
 
-       if not token:
-            raise HTTPException(status_code=401, detail="Not authenticated")
-
-       current_user = await get_current_user(token)
-      
-       print(f"Current user:", {"current_user": current_user.username})
-       
-       if not current_user:
-            raise HTTPException(status_code=401, detail="Not authenticated")
-        
-       # If authenticated, return user data
-       return JSONResponse(status_code=200, content={
-            "message": "User is authenticated",
-            "user": {
-                "id": current_user.id,
-                "username": current_user.username,
-                "email": current_user.email,
-                "access_token": current_user.access_token
-            }
-        })
-    except Exception as e:
-        logger.error(f"Error in verify_auth: {e}")
-        print(f"Error in verify_auth: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    user_data = UserRead.from_orm(current_user)
+    return JSONResponse(status_code=200, content={
+        "message": "User is authenticated",
+        "user": user_data.model_dump() # Use .model_dump() for Pydantic v2
+    })

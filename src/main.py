@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 # Change from relative to absolute imports
-from src.database import engine, Base, init_db
+from src.database import init_db # engine and Base removed
 from src.routers import auth, org
 from src.config import get_settings
 
@@ -23,8 +23,13 @@ app.add_middleware(
 )
 
 # Include the auth router
-app.include_router(auth.router)
-app.include_router(org.router, prefix="/api/v1")
+app.include_router(auth.router, prefix="/api/v1/auth", tags=["auth"]) # Changed prefix to include /v1
+app.include_router(org.router, prefix="/api/v1") # This remains /api/v1 for its own routes like /orgs
+
+# Add health check endpoint
+@app.get("/health")
+async def health_check():
+    return {"status": "healthy"}
 
 @app.get("/")
 async def root():
@@ -46,11 +51,4 @@ async def debug_env():
         "client_id_length": len(settings.github_client_id) if settings.github_client_id else 0
     }
 
-@app.get("/auth/test")
-async def test_auth():
-    settings = get_settings()
-    return {
-        "message": "Auth route working",
-        "client_id": settings.github_client_id[:4] + "..." if settings.github_client_id else None,
-        "callback_url": settings.github_callback_url
-    }
+# Removed redundant /auth/test endpoint
